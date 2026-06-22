@@ -1,0 +1,110 @@
+name: Build Android .so
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # 注意：压缩包文件名和新文件夹名均已更新
+      - name: Extract project archive
+        run: |
+          tar -xzf onnx_gdextension_project_only.tar.gz
+          rm onnx_gdextension_project_only.tar.gz
+
+      - name: Setup Python and scons
+        run: pip install scons
+
+      - name: Download Android NDK
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
+          unzip -q android-ndk-r25b-linux.zip -d /tmp
+          rm android-ndk-r25b-linux.zip
+
+      - name: Setup NDK symlink
+        run: |
+          sudo rm -rf /usr/local/lib/android/sdk/ndk
+          sudo mkdir -p /usr/local/lib/android/sdk/ndk
+          sudo ln -s /tmp/android-ndk-r25b /usr/local/lib/android/sdk/ndk/28.1.13356709
+
+      - name: Generate godot-cpp bindings
+        run: |
+          cd onnx_gdextension_improved/godot-cpp-master
+          scons target=template_release generate_bindings=yes -j$(nproc)
+
+      - name: Compile godot-cpp for Android
+        run: |
+          cd onnx_gdextension_improved/godot-cpp-master
+          scons platform=android target=template_release -j$(nproc)
+
+      - name: Fix SConstruct and prepare library
+        run: |
+          cd onnx_gdextension_improved
+          cat > SConstruct << 'EOF'
+          #!/usr/bin/env python
+          import os
+          import subprocess
+
+          libname = "godot_onnx"
+
+          env = Environment()
+          ndk_root = os.environ.get('ANDROID_NDK_ROOT', '/tmp/android-ndk-r25b')
+          env['CC'] = os.environ.get('CC', ndk_root + '/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang')
+          env['CXX'] = os.environ.get('CXX', ndk_root + '/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++')
+          env['LINK'] = env['CXX']
+          env.Append(CPPPATH=[ndk_root + '/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include'])
+          env.Append(LIBPATH=[ndk_root + '/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/21'])
+          env.Append(LINKFLAGS=['-fuse-ld=lld'])
+
+          env['godot_cpp_dir'] = 'godot-cpp-master'
+          env['android_ndk_root'] = ndk_root
+
+          if not os.path.exists(env['godot_cpp_dir']):
+              print("Error: godot-cpp directory not found.")
+              Exit(1)
+
+          env.Append(CCFLAGS=['-fPIC', '-O3', '-std=c++17'])
+          env.Append(LINKFLAGS=['-fPIC'])
+
+          env.Append(CPPPATH=[env['godot_cpp_dir'] + '/include/',
+                              env['godot_cpp_dir'] + '/include/core/',
+                              env['godot_cpp_dir'] + '/gen/include/'])
+
+          env.Append(CPPPATH=['include'])
+          env.Append(LIBPATH=['libs/android/arm64-v8a'])
+          env.Append(LIBS=['onnxruntime'])
+
+          env.Append(LIBPATH=[env['godot_cpp_dir'] + '/bin/'])
+          env.Append(LIBS=['godot-cpp'])
+
+          sources = Glob('src/*.cpp')
+
+          library = env.SharedLibrary(
+              target='bin/' + libname,
+              source=sources
+          )
+
+          Default(library)
+          EOF
+          cd godot-cpp-master/bin
+          ln -sf libgodot-cpp.android.template_release.arm64.a libgodot-cpp.a
+
+      - name: Compile GDExtension
+        env:
+          ANDROID_NDK_ROOT: /tmp/android-ndk-r25b
+        run: |
+          cd onnx_gdextension_improved
+          scons -j$(nproc)
+          mkdir -p bin/android
+          cp bin/libgodot_onnx.so bin/android/libgodot_onnx.android.template_release.arm64.so
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libgodot_onnx-android-arm64
+          path: onnx_gdextension_improved/bin/android/libgodot_onnx.android.template_release.arm64.so
