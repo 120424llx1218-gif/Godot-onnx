@@ -41,7 +41,30 @@ jobs:
           cd onnx_gdextension_improved/godot-cpp-master
           scons platform=android target=template_release -j$(nproc)
 
-      - name: Fix SConstruct and prepare library
+      - name: Build ONNX Runtime static library for Android
+        run: |
+          NDK=/tmp/android-ndk-r25b
+          git clone --depth 1 --branch v1.18.0 https://github.com/microsoft/onnxruntime.git /tmp/onnxruntime
+          cd /tmp/onnxruntime
+          # 创建一个最小构建配置，只生成静态库
+          ./build.sh --config Release \
+            --android \
+            --android_ndk_path $NDK \
+            --android_abi arm64-v8a \
+            --android_api 21 \
+            --build_shared_lib OFF \
+            --build_static_lib ON \
+            --minimal_build \
+            --disable_contrib_ops \
+            --disable_ml_ops \
+            --parallel
+          # 编译完成后，静态库在 build/Release/libonnxruntime.a
+          # 复制到项目中
+          cp build/Release/libonnxruntime.a $GITHUB_WORKSPACE/onnx_gdextension_improved/libs/android/arm64-v8a/
+          # 同时复制头文件（如果需要）
+          cp -r include/onnxruntime $GITHUB_WORKSPACE/onnx_gdextension_improved/include/
+
+      - name: Fix SConstruct for static linking
         run: |
           cd onnx_gdextension_improved
           cat > SConstruct << 'EOF'
@@ -75,8 +98,12 @@ jobs:
                               env['godot_cpp_dir'] + '/gen/include/'])
 
           env.Append(CPPPATH=['include'])
+          # 使用静态库路径，并链接 libonnxruntime.a
           env.Append(LIBPATH=['libs/android/arm64-v8a'])
-          env.Append(LIBS=['onnxruntime'])
+          env.Append(LIBS=['onnxruntime'])  # 链接静态库，需要去掉 lib 前缀和 .a 后缀
+
+          # 附加 ONNX Runtime 可能需要的系统库
+          env.Append(LIBS=['log', 'z', 'c++_shared'])
 
           env.Append(LIBPATH=[env['godot_cpp_dir'] + '/bin/'])
           env.Append(LIBS=['godot-cpp'])
@@ -93,55 +120,14 @@ jobs:
           cd godot-cpp-master/bin
           ln -sf libgodot-cpp.android.template_release.arm64.a libgodot-cpp.a
 
-      # 自动修复源码中的两处编译错误
-      - name: Fix source code errors
+      - name: Fix source code (remove dlopen, etc.)
         run: |
-          cd onnx_gdextension_improved
-          python3 << 'PYEOF'
-          import re
-
-          # 修复 onnx_runtime.cpp
-          with open('src/onnx_runtime.cpp', 'r') as f:
-              content = f.read()
-
-          # 1. 修复 int32 转 int64 的构造
-          # 将：std::vector<int64_t> buffer(ints32.begin(), ints32.end());
-          # 替换为：std::vector<int64_t> buffer; for (auto v : ints32) buffer.push_back(v);
-          old = 'std::vector<int64_t> buffer(ints32.begin(), ints32.end());'
-          new = '''std::vector<int64_t> buffer;
-                  buffer.reserve(ints32.size());
-                  for (int32_t v : ints32) {
-                      buffer.push_back(static_cast<int64_t>(v));
-                  }'''
-          content = content.replace(old, new)
-
-          # 2. 修改 create_tensor_from_dict 签名和调用
-          # 头文件中声明也需要改，我们直接改两个文件
-          # 替换声明和定义中的参数列表，去掉 Ort::Allocator& allocator
-          # 头文件 onnx_runtime.h
-          with open('src/onnx_runtime.h', 'r') as f:
-              header = f.read()
-
-          header = header.replace(
-              'Ort::Value create_tensor_from_dict(const Dictionary& input_desc, Ort::Allocator& allocator);',
-              'Ort::Value create_tensor_from_dict(const Dictionary& input_desc);'
-          )
-
-          # cpp 文件：函数定义行
-          content = content.replace(
-              'Ort::Value ONNXRuntime::create_tensor_from_dict(const Dictionary& input_desc, Ort::Allocator& allocator) {',
-              'Ort::Value ONNXRuntime::create_tensor_from_dict(const Dictionary& input_desc) {'
-          )
-
-          # 修改调用处：create_tensor_from_dict(input_desc, allocator) -> create_tensor_from_dict(input_desc)
-          content = content.replace('create_tensor_from_dict(input_desc, allocator)',
-                                   'create_tensor_from_dict(input_desc)')
-
-          with open('src/onnx_runtime.cpp', 'w') as f:
-              f.write(content)
-          with open('src/onnx_runtime.h', 'w') as f:
-              f.write(header)
-          PYEOF
+          cd onnx_gdextension_improved/src
+          # 如果 register_types.cpp 中有 dlopen 加载 libonnxruntime.so 的代码，可以删除或保留，静态链接后不再需要
+          # 但保留也不影响，只需确保不会因为找不到 .so 而报错
+          # 我们直接清空 dlopen 部分（简单替换为空）
+          sed -i 's|void\* handle = dlopen.*|// static linking, no dlopen needed|g' register_types.cpp
+          # 也可以保留原样，不会影响编译
 
       - name: Compile GDExtension
         env:
