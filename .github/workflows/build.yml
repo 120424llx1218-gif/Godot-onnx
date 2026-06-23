@@ -62,6 +62,7 @@ jobs:
             --disable_ml_ops \
             --parallel \
             --cmake_extra_defines BUILD_SHARED_LIBS=OFF \
+            --cmake_extra_defines FETCHCONTENT_SOURCE_DIR_EIGEN=/tmp/eigen \
             --eigen_path /tmp/eigen
           cp build/Android/Release/libonnxruntime.a $GITHUB_WORKSPACE/onnx_gdextension_improved/libs/android/arm64-v8a/
           cp -r include/onnxruntime $GITHUB_WORKSPACE/onnx_gdextension_improved/include/
@@ -101,7 +102,7 @@ jobs:
 
           env.Append(CPPPATH=['include'])
           env.Append(LIBPATH=['libs/android/arm64-v8a'])
-          env.Append(LIBS=['onnxruntime'])
+          env.Append(LIBS=['onnxruntime'])  # 静态库
 
           env.Append(LIBS=['log', 'z', 'c++_shared'])
 
