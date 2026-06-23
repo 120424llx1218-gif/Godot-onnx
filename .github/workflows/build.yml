@@ -46,22 +46,19 @@ jobs:
           NDK=/tmp/android-ndk-r25b
           git clone --depth 1 --branch v1.18.0 https://github.com/microsoft/onnxruntime.git /tmp/onnxruntime
           cd /tmp/onnxruntime
-          # 创建一个最小构建配置，只生成静态库
           ./build.sh --config Release \
             --android \
             --android_ndk_path $NDK \
             --android_abi arm64-v8a \
             --android_api 21 \
-            --build_shared_lib OFF \
-            --build_static_lib ON \
             --minimal_build \
             --disable_contrib_ops \
             --disable_ml_ops \
-            --parallel
-          # 编译完成后，静态库在 build/Release/libonnxruntime.a
-          # 复制到项目中
-          cp build/Release/libonnxruntime.a $GITHUB_WORKSPACE/onnx_gdextension_improved/libs/android/arm64-v8a/
-          # 同时复制头文件（如果需要）
+            --parallel \
+            --cmake_extra_defines BUILD_SHARED_LIBS=OFF
+          # 静态库输出路径：build/Android/Release/libonnxruntime.a
+          cp build/Android/Release/libonnxruntime.a $GITHUB_WORKSPACE/onnx_gdextension_improved/libs/android/arm64-v8a/
+          # 复制头文件
           cp -r include/onnxruntime $GITHUB_WORKSPACE/onnx_gdextension_improved/include/
 
       - name: Fix SConstruct for static linking
@@ -98,11 +95,10 @@ jobs:
                               env['godot_cpp_dir'] + '/gen/include/'])
 
           env.Append(CPPPATH=['include'])
-          # 使用静态库路径，并链接 libonnxruntime.a
           env.Append(LIBPATH=['libs/android/arm64-v8a'])
-          env.Append(LIBS=['onnxruntime'])  # 链接静态库，需要去掉 lib 前缀和 .a 后缀
+          env.Append(LIBS=['onnxruntime'])  # 链接静态库 libonnxruntime.a
 
-          # 附加 ONNX Runtime 可能需要的系统库
+          # 静态链接 ONNX Runtime 可能需要的系统库
           env.Append(LIBS=['log', 'z', 'c++_shared'])
 
           env.Append(LIBPATH=[env['godot_cpp_dir'] + '/bin/'])
@@ -120,14 +116,12 @@ jobs:
           cd godot-cpp-master/bin
           ln -sf libgodot-cpp.android.template_release.arm64.a libgodot-cpp.a
 
-      - name: Fix source code (remove dlopen, etc.)
+      # 可选：移除 register_types.cpp 中旧的 dlopen 代码（保留也可以，静态链接后不再需要）
+      - name: Clean up dlopen (optional)
         run: |
           cd onnx_gdextension_improved/src
-          # 如果 register_types.cpp 中有 dlopen 加载 libonnxruntime.so 的代码，可以删除或保留，静态链接后不再需要
-          # 但保留也不影响，只需确保不会因为找不到 .so 而报错
-          # 我们直接清空 dlopen 部分（简单替换为空）
-          sed -i 's|void\* handle = dlopen.*|// static linking, no dlopen needed|g' register_types.cpp
-          # 也可以保留原样，不会影响编译
+          sed -i 's|// 手动加载|// static linking: dlopen removed|' register_types.cpp
+          sed -i '/dlopen/,/break;/d' register_types.cpp  2>/dev/null || true
 
       - name: Compile GDExtension
         env:
