@@ -41,7 +41,13 @@ jobs:
           cd onnx_gdextension_improved/godot-cpp-master
           scons platform=android target=template_release -j$(nproc)
 
-      - name: Build ONNX Runtime static library for Android
+      - name: Prepare Eigen for ONNX Runtime
+        run: |
+          # 克隆指定 commit，避免下载哈希问题
+          git clone --depth 1 --branch e7248b26a1ed53fa030c5c459f7ea095dfd276ac \
+            https://gitlab.com/libeigen/eigen.git /tmp/eigen
+
+      - name: Build ONNX Runtime static library
         run: |
           NDK=/tmp/android-ndk-r25b
           git clone --depth 1 --branch v1.18.0 https://github.com/microsoft/onnxruntime.git /tmp/onnxruntime
@@ -55,10 +61,10 @@ jobs:
             --disable_contrib_ops \
             --disable_ml_ops \
             --parallel \
-            --cmake_extra_defines BUILD_SHARED_LIBS=OFF
-          # 静态库输出路径：build/Android/Release/libonnxruntime.a
+            --cmake_extra_defines BUILD_SHARED_LIBS=OFF \
+            --eigen_path /tmp/eigen
+          # 复制生成的静态库和头文件
           cp build/Android/Release/libonnxruntime.a $GITHUB_WORKSPACE/onnx_gdextension_improved/libs/android/arm64-v8a/
-          # 复制头文件
           cp -r include/onnxruntime $GITHUB_WORKSPACE/onnx_gdextension_improved/include/
 
       - name: Fix SConstruct for static linking
@@ -96,9 +102,9 @@ jobs:
 
           env.Append(CPPPATH=['include'])
           env.Append(LIBPATH=['libs/android/arm64-v8a'])
-          env.Append(LIBS=['onnxruntime'])  # 链接静态库 libonnxruntime.a
+          env.Append(LIBS=['onnxruntime'])  # 静态库
 
-          # 静态链接 ONNX Runtime 可能需要的系统库
+          # 静态链接可能需要的额外系统库
           env.Append(LIBS=['log', 'z', 'c++_shared'])
 
           env.Append(LIBPATH=[env['godot_cpp_dir'] + '/bin/'])
@@ -116,12 +122,12 @@ jobs:
           cd godot-cpp-master/bin
           ln -sf libgodot-cpp.android.template_release.arm64.a libgodot-cpp.a
 
-      # 可选：移除 register_types.cpp 中旧的 dlopen 代码（保留也可以，静态链接后不再需要）
       - name: Clean up dlopen (optional)
         run: |
           cd onnx_gdextension_improved/src
           sed -i 's|// 手动加载|// static linking: dlopen removed|' register_types.cpp
-          sed -i '/dlopen/,/break;/d' register_types.cpp  2>/dev/null || true
+          # 移除旧的 dlopen 块（保留原样也可以）
+          sed -i '/dlopen/,/break;/d' register_types.cpp 2>/dev/null || true
 
       - name: Compile GDExtension
         env:
